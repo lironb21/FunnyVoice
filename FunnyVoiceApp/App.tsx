@@ -7,9 +7,14 @@ import {
   TouchableOpacity, 
   SafeAreaView,
   Animated,
-  Dimensions
+  Dimensions,
+  Image,
+  Alert,
+  ScrollView
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { Audio } from 'expo-av';
+import * as Speech from 'expo-speech';
 
 const { width, height } = Dimensions.get('window');
 
@@ -17,6 +22,31 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [recordingSize, setRecordingSize] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  const [sound, setSound] = useState<Audio.Sound | null>(null);
+  const [selectedVoiceEffect, setSelectedVoiceEffect] = useState('baby-voice');
+  const [silenceTimer, setSilenceTimer] = useState<NodeJS.Timeout | null>(null);
+  const [isListening, setIsListening] = useState(true);
+
+  // Request audio permissions on component mount
+  useEffect(() => {
+    (async () => {
+      const { status } = await Audio.requestPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission needed', 'Audio recording permission is required to use this app.');
+      }
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      });
+      
+      // Set up the app
+      setIsListening(true);
+    })();
+  }, []);
+
+
   
   // Animation values
   const bounceAnim = new Animated.Value(1);
@@ -94,15 +124,179 @@ export default function App() {
     scaleAnim.setValue(1);
   };
 
-  const handlePressIn = () => {
-    setIsRecording(true);
-    setRecordingTime(0);
-    setRecordingSize(0);
+
+
+
+
+  const startRecording = async () => {
+    try {
+      // Start audio recording
+      const { recording } = await Audio.Recording.createAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY
+      );
+      
+      setRecording(recording);
+      setIsRecording(true);
+      setRecordingTime(0);
+      setRecordingSize(0);
+      
+      // Start silence detection
+      startVoiceActivityTimer();
+      
+    } catch (err) {
+      console.error('Failed to start recording', err);
+      Alert.alert('Error', 'Failed to start recording');
+    }
   };
 
-  const handlePressOut = () => {
-    setIsRecording(false);
+  const stopRecording = async () => {
+    try {
+      if (recording) {
+        await recording.stopAndUnloadAsync();
+        const uri = recording.getURI();
+        setRecording(null);
+        setIsRecording(false);
+        
+        if (uri) {
+          // Play back immediately with selected effect
+          playRecording(uri);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to stop recording', err);
+      Alert.alert('Error', 'Failed to stop recording');
+    }
   };
+
+  const startVoiceActivityMonitoring = () => {
+    // Wait 1 second to let the recording stabilize, then start monitoring
+    setTimeout(() => {
+      if (recording) {
+        // Now start the silence detection timer
+        startVoiceActivityTimer();
+      }
+    }, 1000);
+  };
+
+  const startContinuousSilenceMonitoring = () => {
+    // Clear any existing timer
+    if (silenceTimer) {
+      clearTimeout(silenceTimer);
+    }
+    
+    // Don't start silence timer immediately - wait for actual audio input
+    // The timer will be started when we detect voice activity
+  };
+
+  const startVoiceActivityTimer = () => {
+    // Clear any existing timer
+    if (silenceTimer) {
+      clearTimeout(silenceTimer);
+    }
+    
+    // Start 3-second silence timer only when voice activity is detected
+    const timer = setTimeout(() => {
+      if (isRecording && recordingTime > 0) {
+        stopRecordingAndPlay();
+      }
+    }, 3000);
+    
+    setSilenceTimer(timer);
+  };
+
+  const startSilenceDetection = () => {
+    // Clear any existing silence timer
+    if (silenceTimer) {
+      clearTimeout(silenceTimer);
+    }
+    
+    // Set a new silence timer for 3 seconds
+    const timer = setTimeout(() => {
+      if (isRecording && recordingTime > 0) {
+        stopRecordingAndPlay();
+      }
+    }, 3000);
+    
+    setSilenceTimer(timer);
+  };
+
+  const resetSilenceTimer = () => {
+    // Clear existing timer
+    if (silenceTimer) {
+      clearTimeout(silenceTimer);
+    }
+    
+    // Set new timer for 3 seconds
+    const timer = setTimeout(() => {
+      if (isRecording && recordingTime > 0) {
+        stopRecordingAndPlay();
+      }
+    }, 3000);
+    
+    setSilenceTimer(timer);
+  };
+
+  const stopRecordingAndPlay = async () => {
+    if (!recording) return;
+
+    try {
+      await recording.stopAndUnloadAsync();
+      const uri = recording.getURI();
+      setRecording(null);
+      setIsRecording(false);
+      
+      if (uri && recordingTime > 0) {
+        // Play back with selected effect
+        await playRecording(uri);
+        
+
+      }
+    } catch (err) {
+      console.error('Failed to stop recording', err);
+      setIsRecording(false);
+    }
+  };
+
+
+
+  const playRecording = async (uri: string) => {
+    try {
+      setIsPlaying(true);
+      
+      // Get the selected voice effect settings
+      const selectedEffect = voiceEffects.find(effect => effect.id === selectedVoiceEffect);
+      const playbackRate = selectedEffect ? selectedEffect.rate : 2.0;
+      
+      // Play back your actual recorded voice with the selected effect
+      const { sound: newSound } = await Audio.Sound.createAsync(
+        { uri: uri },
+        { 
+          shouldPlay: true,
+          volume: 1.0,
+          // Apply the selected voice effect
+          rate: playbackRate,
+          shouldCorrectPitch: false, // Don't correct pitch when changing rate
+        }
+      );
+      
+      setSound(newSound);
+      
+      // Set up sound completion handler
+      newSound.setOnPlaybackStatusUpdate((status) => {
+        if ('didJustFinish' in status && status.didJustFinish) {
+          setIsPlaying(false);
+          setSound(null);
+        }
+      });
+      
+    } catch (err) {
+      console.error('Failed to play recording', err);
+      setIsPlaying(false);
+      Alert.alert('Error', 'Failed to play recording');
+    }
+  };
+
+
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -121,6 +315,15 @@ export default function App() {
     outputRange: ['0deg', '360deg'],
   });
 
+  // Voice effects configuration
+  const voiceEffects = [
+    { id: 'baby-voice', name: 'Baby Voice', icon: require('./assets/voices/baby-voice.png'), rate: 2.0, pitch: 'High' },
+    { id: 'robot-voice', name: 'Robot Voice', icon: require('./assets/voices/robot-voice.png'), rate: 0.8, pitch: 'Low' },
+    { id: 'monster-voice', name: 'Monster Voice', icon: require('./assets/voices/monster-voice.png'), rate: 0.5, pitch: 'Very Low' },
+    { id: 'witch-voice', name: 'Witch Voice', icon: require('./assets/voices/witch-voice.png'), rate: 0.7, pitch: 'Low' },
+    { id: 'satan-voice', name: 'Satan Voice', icon: require('./assets/voices/satan-voice.png'), rate: 0.6, pitch: 'Very Low' },
+  ];
+
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="light" />
@@ -128,76 +331,113 @@ export default function App() {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>FunnyVoice</Text>
-        <Text style={styles.subtitle}>¡Grabar es divertido!</Text>
       </View>
 
       {/* Main Recording Area */}
       <View style={styles.mainArea}>
-        {/* Mexican Character */}
-        <Animated.View 
-          style={[
-            styles.characterContainer,
-            {
-              transform: [
-                { scale: Animated.multiply(bounceAnim, scaleAnim) },
-                { rotate: spin }
-              ]
-            }
-          ]}
-        >
-          <View style={styles.character}>
-            {/* Sombrero */}
-            <View style={styles.sombrero}>
-              <View style={styles.sombreroTop} />
-              <View style={styles.sombreroBrim} />
-            </View>
-            
-            {/* Face */}
-            <View style={styles.face}>
-              {/* Eyes */}
-              <View style={styles.eyes}>
-                <View style={[styles.eye, styles.eyeLeft]} />
-                <View style={[styles.eye, styles.eyeRight]} />
-              </View>
-              
-              {/* Mustache */}
-              <View style={styles.mustache}>
-                <View style={styles.mustacheLeft} />
-                <View style={styles.mustacheRight} />
-              </View>
-              
-              {/* Mouth */}
-              <View style={[styles.mouth, isRecording && styles.mouthOpen]} />
-            </View>
-            
-            {/* Body */}
-            <View style={styles.body}>
-              <View style={styles.poncho}>
-                <View style={styles.ponchoLeft} />
-                <View style={styles.ponchoRight} />
-              </View>
-            </View>
-          </View>
-        </Animated.View>
+                         {/* Mexican Character - Press and Hold to Record */}
+         <TouchableOpacity
+           style={styles.characterContainer}
+           onPressIn={startRecording}
+           onPressOut={stopRecording}
+           activeOpacity={0.8}
+         >
+           <Animated.View 
+             style={[
+               styles.characterContainer,
+               {
+                 transform: [
+                   { scale: Animated.multiply(bounceAnim, scaleAnim) },
+                   { rotate: spin }
+                 ]
+               }
+             ]}
+           >
+             <Image 
+               source={require('./assets/mexican-character.png')} 
+               style={styles.characterImage}
+               resizeMode="contain"
+             />
+           </Animated.View>
+         </TouchableOpacity>
 
-        {/* Recording Button */}
-        <TouchableOpacity
-          style={[styles.recordButton, isRecording && styles.recordingActive]}
-          onPressIn={handlePressIn}
-          onPressOut={handlePressOut}
-          activeOpacity={0.8}
-        >
-          <Ionicons 
-            name={isRecording ? "stop" : "mic"} 
-            size={48} 
-            color="#fff" 
-          />
-        </TouchableOpacity>
+         {/* Voice Effect Selector */}
+         <View style={styles.voiceEffectSelector}>
+           <Text style={styles.selectorTitle}>Choose Your Voice Effect</Text>
+           <ScrollView 
+             horizontal 
+             showsHorizontalScrollIndicator={false}
+             style={styles.voiceEffectsScroll}
+           >
+             {voiceEffects.map((effect) => (
+               <TouchableOpacity
+                 key={effect.id}
+                 style={[
+                   styles.voiceEffectOption,
+                   selectedVoiceEffect === effect.id && styles.selectedVoiceEffect
+                 ]}
+                 onPress={() => setSelectedVoiceEffect(effect.id)}
+               >
+                 <Image 
+                   source={effect.icon} 
+                   style={styles.voiceEffectIcon}
+                   resizeMode="contain"
+                 />
+                 <Text style={[
+                   styles.voiceEffectName,
+                   selectedVoiceEffect === effect.id && styles.selectedVoiceEffectName
+                 ]}>
+                   {effect.name}
+                 </Text>
+                 {/* <Text style={styles.voiceEffectPitch}>{effect.pitch}</Text> */}
+               </TouchableOpacity>
+             ))}
+           </ScrollView>
+         </View>
+
+                           {/* Recording Status Indicator */}
+         <View style={styles.listeningIndicator}>
+           <View style={[styles.listeningDot, isRecording && styles.listeningActive]} />
+           <Text style={styles.listeningText}>
+             {isRecording ? "🎤 Recording..." : "🎵 Ready to Record"}
+           </Text>
+         </View>
+
+
+
+
+
+
 
         {/* Instructions */}
         <Text style={styles.instructions}>
-          {isRecording ? "¡Habla ahora! Suelta para parar" : "Presiona y mantén para grabar"}
+          {isRecording ? "🎤 Habla ahora! Suelta para detener la grabación" : "🎵 Presiona y mantén el personaje para grabar"}
         </Text>
+
+        {/* Recording Status */}
+        {isRecording && (
+          <Text style={styles.recordingStatus}>
+            🎤 Grabando... Suelta para detener
+          </Text>
+        )}
+        {!isRecording && (
+          <Text style={styles.recordingStatus}>
+            🎵 Presiona y mantén el personaje para grabar
+          </Text>
+        )}
+
+        {/* Voice Effect Indicator */}
+        {isPlaying && (
+          <View style={styles.babyVoiceIndicator}>
+            <Text style={styles.babyVoiceText}>
+              🎵 Playing with {voiceEffects.find(e => e.id === selectedVoiceEffect)?.name} Effect! 🎵
+            </Text>
+            <Text style={styles.babyVoiceSubtext}>
+              Rate: {voiceEffects.find(e => e.id === selectedVoiceEffect)?.rate}x | 
+              Pitch: {voiceEffects.find(e => e.id === selectedVoiceEffect)?.pitch}
+            </Text>
+          </View>
+        )}
       </View>
 
       {/* Recording Stats */}
@@ -214,10 +454,7 @@ export default function App() {
         </View>
       )}
 
-      {/* Footer */}
-      <View style={styles.footer}>
-        <Text style={styles.footerText}>🎵 Tu voz, tu estilo mexicano 🎵</Text>
-      </View>
+
     </SafeAreaView>
   );
 }
@@ -251,128 +488,149 @@ const styles = StyleSheet.create({
   },
   characterContainer: {
     marginBottom: 40,
-  },
-  character: {
-    alignItems: 'center',
-  },
-  sombrero: {
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  sombreroTop: {
-    width: 80,
-    height: 40,
-    backgroundColor: '#8b4513',
-    borderRadius: 40,
-    borderWidth: 3,
-    borderColor: '#654321',
-  },
-  sombreroBrim: {
-    width: 120,
-    height: 20,
-    backgroundColor: '#8b4513',
-    borderRadius: 10,
-    borderWidth: 3,
-    borderColor: '#654321',
-  },
-  face: {
-    width: 100,
-    height: 100,
-    backgroundColor: '#ffdbac',
-    borderRadius: 50,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 3,
-    borderColor: '#e6b17a',
   },
-  eyes: {
-    flexDirection: 'row',
+  characterImage: {
+    width: 200,
+    height: 200,
+  },
+  voiceEffectSelector: {
+    marginBottom: 30,
+    alignItems: 'center',
+  },
+  selectorTitle: {
+    fontSize: 18,
+    color: '#f4f4f4',
     marginBottom: 15,
+    fontWeight: '600',
   },
-  eye: {
-    width: 12,
-    height: 12,
-    backgroundColor: '#2c1810',
-    borderRadius: 6,
+  voiceEffectsScroll: {
+    paddingHorizontal: 20,
+  },
+  voiceEffectOption: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    padding: 15,
     marginHorizontal: 8,
+    borderRadius: 15,
+    alignItems: 'center',
+    minWidth: 80,
+    borderWidth: 2,
+    borderColor: 'transparent',
   },
-  eyeLeft: {
-    marginRight: 15,
+  selectedVoiceEffect: {
+    backgroundColor: 'rgba(255, 107, 53, 0.3)',
+    borderColor: '#ff6b35',
   },
-  eyeRight: {
-    marginLeft: 15,
+  voiceEffectIcon: {
+    width: 50,
+    height: 50,
+    marginBottom: 8,
   },
-  mustache: {
-    flexDirection: 'row',
+  voiceEffectName: {
+    fontSize: 12,
+    color: '#f4f4f4',
+    textAlign: 'center',
+    fontWeight: '500',
+    marginBottom: 4,
+  },
+  selectedVoiceEffectName: {
+    color: '#ff6b35',
+    fontWeight: '600',
+  },
+  voiceEffectPitch: {
+    fontSize: 10,
+    color: '#a0a0a0',
+    textAlign: 'center',
+  },
+  listeningIndicator: {
+    alignItems: 'center',
+    marginTop: 20,
+    marginBottom: 20,
+  },
+  listeningDot: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#666',
     marginBottom: 10,
   },
-  mustacheLeft: {
-    width: 25,
-    height: 8,
-    backgroundColor: '#2c1810',
-    borderRadius: 4,
-    marginRight: 5,
-  },
-  mustacheRight: {
-    width: 25,
-    height: 8,
-    backgroundColor: '#2c1810',
-    borderRadius: 4,
-    marginLeft: 5,
-  },
-  mouth: {
-    width: 20,
-    height: 8,
-    backgroundColor: '#2c1810',
-    borderRadius: 4,
-  },
-  mouthOpen: {
-    height: 15,
-    borderRadius: 10,
-  },
-  body: {
-    marginTop: 10,
-  },
-  poncho: {
-    flexDirection: 'row',
-  },
-  ponchoLeft: {
-    width: 40,
-    height: 60,
+  listeningActive: {
     backgroundColor: '#ff6b35',
-    borderRadius: 20,
-    marginRight: 5,
   },
-  ponchoRight: {
-    width: 40,
-    height: 60,
-    backgroundColor: '#ff6b35',
-    borderRadius: 20,
-    marginLeft: 5,
+  listeningText: {
+    fontSize: 16,
+    color: '#f4f4f4',
+    textAlign: 'center',
   },
-  recordButton: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
+  manualStopButton: {
     backgroundColor: '#e74c3c',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+    marginTop: 15,
+    borderWidth: 2,
+    borderColor: '#c0392b',
+  },
+  manualStopText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  recordingStatus: {
+    fontSize: 14,
+    color: '#ff6b35',
+    textAlign: 'center',
+    marginTop: 10,
+    fontStyle: 'italic',
+  },
+  startRecordingButton: {
+    backgroundColor: '#27ae60',
+    paddingHorizontal: 25,
+    paddingVertical: 15,
+    borderRadius: 25,
+    marginTop: 20,
     alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
+    flexDirection: 'row',
+    borderWidth: 2,
+    borderColor: '#229954',
   },
-  recordingActive: {
-    backgroundColor: '#c0392b',
-    transform: [{ scale: 1.1 }],
+  startRecordingText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+    marginLeft: 10,
   },
+
+
   instructions: {
     fontSize: 18,
     color: '#f4f4f4',
     textAlign: 'center',
     marginBottom: 20,
+  },
+  babyVoiceIndicator: {
+    backgroundColor: 'rgba(255, 107, 53, 0.2)',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+    borderWidth: 2,
+    borderColor: '#ff6b35',
+    marginTop: 10,
+  },
+  babyVoiceText: {
+    fontSize: 16,
+    color: '#ff6b35',
+    textAlign: 'center',
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  babyVoiceSubtext: {
+    fontSize: 12,
+    color: '#ff6b35',
+    textAlign: 'center',
+    fontWeight: '400',
+    opacity: 0.8,
   },
   statsContainer: {
     flexDirection: 'row',
@@ -397,14 +655,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#f4f4f4',
   },
-  footer: {
-    alignItems: 'center',
-    paddingBottom: 20,
-  },
-  footerText: {
-    fontSize: 16,
-    color: '#f4f4f4',
-    textAlign: 'center',
-    fontStyle: 'italic',
-  },
+
 });

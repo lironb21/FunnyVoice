@@ -11,11 +11,16 @@
   "dependencies": {
     "@expo/metro-runtime": "~5.0.4",
     "@expo/vector-icons": "^14.1.0",
+    "@react-native-voice/voice": "^3.2.4",
     "expo": "~53.0.22",
+    "expo-audio": "^0.4.8",
+    "expo-av": "^15.1.7",
+    "expo-speech": "^13.1.7",
     "expo-status-bar": "~2.2.3",
     "react": "19.0.0",
     "react-dom": "^19.0.0",
     "react-native": "^0.79.5",
+    "react-native-audio-toolkit": "^1.0.6",
     "react-native-web": "^0.20.0"
   },
   "devDependencies": {
